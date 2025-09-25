@@ -1,55 +1,57 @@
-#include <linux/module.h>
 #include <linux/lsm_hooks.h>
 #include <linux/fs.h>
-#include <linux/dcache.h>
-#include <linux/namei.h>
+#include <linux/module.h>
+#include <linux/cred.h>
 
-#define BLOCKED_SO_PATH "/usr/lib/badlib.so"
+static const char *deny_libs[] = {
+    "/home/asd/lsm_test/badlib.so"
+};
 
-static int block_specific_so(struct file *file, unsigned long prot, unsigned long flags)
+static int match_deny_lib(const char *filename)
 {
-    char *buf = NULL;
-    char *path = NULL;
-
-    if (!file || !file->f_path.dentry)
+    int i;
+    if (!filename)
         return 0;
-
-    buf = (char *)kmalloc(PATH_MAX, GFP_KERNEL);
-    if (!buf)
-        return 0;
-
-    path = d_path(&file->f_path, buf, PATH_MAX);
-    if (IS_ERR(path)) {
-        kfree(buf);
-        return 0;
+    for (i = 0; i < ARRAY_SIZE(deny_libs); i++) {
+        if (strcmp(filename, deny_libs[i]) == 0)
+            return 1;
     }
-
-    if (strcmp(path, BLOCKED_SO_PATH) == 0) {
-        kfree(buf);
-        pr_info("LSM: Blocked loading of %s\n", BLOCKED_SO_PATH);
-        return -EACCES;
-    }
-
-    kfree(buf);
     return 0;
 }
 
-static struct security_hook_list mylsm_hooks[] __lsm_ro_after_init = {
-    LSM_HOOK_INIT(mmap_file, block_specific_so),
+static int my_file_open(struct file *file)
+{
+    char *tmp;
+    char *pathname = NULL;
+    int ret = 0;
+    /* 限制模块root也被禁止的话不用capable(CAP_SYSADMIN) */
+    tmp = (char *)__get_free_page(GFP_KERNEL);
+    if (!tmp)
+        return 0;
+    pathname = d_path(&file->f_path, tmp, PAGE_SIZE);
+    if (!IS_ERR(pathname)) {
+        if (match_deny_lib(pathname)) {
+            pr_info("LSM: Denying load of %s\n", pathname);
+            ret = -EACCES;
+        }
+    }
+    free_page((unsigned long)tmp);
+    return ret;
+}
+
+static struct security_hook_list my_hooks[] __lsm_ro_after_init = {
+    LSM_HOOK_INIT(file_open, my_file_open),
 };
 
-static struct lsm_id blockso_lsm_id __lsm_ro_after_init = LSM_ID_INIT(blockso);
-
-static int __init mylsm_init(void)
+static int __init my_lsm_init(void)
 {
-    security_add_hooks(mylsm_hooks, ARRAY_SIZE(mylsm_hooks), &blockso_lsm_id);
-    pr_info("LSM: blockso loaded.\n");
+    security_add_hooks(my_hooks, ARRAY_SIZE(my_hooks), "deny_so_loader");
+    pr_info("deny_so_loader LSM initialized\n");
     return 0;
 }
 
-DEFINE_LSM(blockso) = {
-    .name = "blockso",
-    .init = mylsm_init,
+DEFINE_LSM(deny_so_loader) = {
+    .name = "deny_so_loader",
+    .init = my_lsm_init,
 };
-
 MODULE_LICENSE("GPL");
